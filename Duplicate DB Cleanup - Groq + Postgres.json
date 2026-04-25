@@ -1,0 +1,412 @@
+{
+  "name": "Duplicate DB Cleanup - Groq + Postgres",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "duplicate-cleanup",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "c1254917-ab90-46cd-8897-56fcf5f2391a",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        -784,
+        -704
+      ],
+      "webhookId": "dup-cleanup-groq-001"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a database assistant. Extract the table name and class value from the user message. Respond ONLY in raw JSON with no markdown or backticks. Use this exact format: {\\\"table\\\": \\\"students\\\", \\\"class\\\": \\\"10A\\\"}\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"={{ $json.body.message }}\"\n    }\n  ],\n  \"temperature\": 0.1\n}",
+        "options": {}
+      },
+      "id": "8643e39d-c946-4a0a-9f59-85360dc973a2",
+      "name": "AI: Identify Class",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -560,
+        -704
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lo5Gkys6z4hCHqZl",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const content = $input.first().json.choices?.[0]?.message?.content || '';\nlet cleaned = content.trim().replace(/```json|```/g, '').trim();\ntry {\n  const parsed = JSON.parse(cleaned);\n  return [{ json: { table: parsed.table || 'students', class: parsed.class || '' } }];\n} catch(e) {\n  return [{ json: { table: 'students', class: '', error: 'parse_failed', raw: cleaned } }];\n}"
+      },
+      "id": "d9895cd5-4dc3-465e-81a6-8c7f1e92da31",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -336,
+        -704
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT class, COUNT(*) as duplicate_count, MIN(id) as keep_id FROM {{ $json.table }} WHERE class = '{{ $json.class }}' GROUP BY class HAVING COUNT(*) > 1;",
+        "options": {}
+      },
+      "id": "9c6f0f59-113e-4584-862e-142d77b45fa2",
+      "name": "Query: Find Duplicates",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        -128,
+        -704
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PrfFdxjTeCuVeWDl",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-01",
+              "leftValue": "={{ $input.all().length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b0137b02-aed3-4422-bdf1-cc8616af76c8",
+      "name": "Duplicates Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        96,
+        -704
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'clean', message: 'No duplicate entries found', table: $('Parse AI Response').first().json.table, class: $('Parse AI Response').first().json.class, timestamp: new Date().toISOString() }) }}",
+        "options": {}
+      },
+      "id": "87484a5c-62e3-42c0-8fd8-17832781bb93",
+      "name": "Send Clean Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        320,
+        -848
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n{\n  model: \"llama-3.3-70b-versatile\",\n  temperature: 0.1,\n  messages: [\n    {\n      role: \"system\",\n      content: \"You are a database safety validator. Review duplicate records and decide if deletion is safe. Respond ONLY in raw JSON. Format: {\\\"approved\\\": true, \\\"reason\\\": \\\"Safe to delete\\\", \\\"records_to_delete\\\": 2}\"\n    },\n    {\n      role: \"user\",\n      content: \"Duplicates found: \" + JSON.stringify($input.all().map(i => i.json)) + \" Approve deletion? Raw JSON only.\"\n    }\n  ]\n}\n}}",
+        "options": {}
+      },
+      "id": "423a132a-8197-4412-b6b6-80d5a635de0a",
+      "name": "AI: Validate Deletion",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        96,
+        -544
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lo5Gkys6z4hCHqZl",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const content = $input.first().json.choices?.[0]?.message?.content || '';\nlet cleaned = content.trim().replace(/```json|```/g, '').trim();\ntry {\n  const parsed = JSON.parse(cleaned);\n  const isApproved = parsed.approved === true || parsed.approved === 'true' || String(parsed.approved).toLowerCase() === 'true';\n  return [{ json: {\n    approved: isApproved ? 1 : 0,\n    approvedBool: isApproved,\n    reason: String(parsed.reason || 'No reason given'),\n    records_to_delete: Number(parsed.records_to_delete) || 0\n  }}];\n} catch(e) {\n  return [{ json: { approved: 0, approvedBool: false, reason: 'Validation parse failed', records_to_delete: 0 } }];\n}"
+      },
+      "id": "1b68269f-60ea-4b10-a143-a3dba0c59112",
+      "name": "Parse Validation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        96,
+        -384
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-02",
+              "leftValue": "={{ $json.approved }}",
+              "rightValue": 1,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "ea802d7c-0703-4bf7-b2fe-bbadc1e41bcd",
+      "name": "Check Approval",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        96,
+        -224
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'rejected', message: 'AI validation rejected the deletion', reason: $('Parse Validation').first().json.reason, timestamp: new Date().toISOString() }) }}",
+        "options": {}
+      },
+      "id": "12703dca-2b1b-473e-bdf5-0f9dfa3af7d7",
+      "name": "Send Rejected Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -128,
+        -224
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM {{ $('Parse AI Response').first().json.table }} WHERE id NOT IN ( SELECT MIN(id) FROM {{ $('Parse AI Response').first().json.table }} WHERE class = '{{ $('Parse AI Response').first().json.class }}' GROUP BY class, name, roll_number ) AND class = '{{ $('Parse AI Response').first().json.class }}';",
+        "options": {}
+      },
+      "id": "dd5a11f5-4a49-4af0-a989-c45557373702",
+      "name": "Execute: Delete Duplicates",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        320,
+        -224
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PrfFdxjTeCuVeWDl",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO cleanup_logs (timestamp, table_name, class_value, records_deleted, status, ai_reason) VALUES (NOW(), '{{ $('Parse AI Response').first().json.table }}', '{{ $('Parse AI Response').first().json.class }}', {{ $('Parse Validation').first().json.records_to_delete }}, 'SUCCESS', '{{ $('Parse Validation').first().json.reason }}');",
+        "options": {}
+      },
+      "id": "6afa20aa-2b4e-4705-8f1b-6dd771917b95",
+      "name": "Log to Database",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        320,
+        -64
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PrfFdxjTeCuVeWDl",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'success', message: 'Duplicates deleted successfully', table: $('Parse AI Response').first().json.table, class: $('Parse AI Response').first().json.class, records_deleted: $('Parse Validation').first().json.records_to_delete, reason: $('Parse Validation').first().json.reason, timestamp: new Date().toISOString() }) }}",
+        "options": {}
+      },
+      "id": "3aae495f-62c3-4be9-b3ab-570221cd6f56",
+      "name": "Send Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        320,
+        112
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "AI: Identify Class",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: Identify Class": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "Query: Find Duplicates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query: Find Duplicates": {
+      "main": [
+        [
+          {
+            "node": "Duplicates Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Duplicates Found?": {
+      "main": [
+        [
+          {
+            "node": "AI: Validate Deletion",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Clean Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: Validate Deletion": {
+      "main": [
+        [
+          {
+            "node": "Parse Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Validation": {
+      "main": [
+        [
+          {
+            "node": "Check Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Approval": {
+      "main": [
+        [
+          {
+            "node": "Execute: Delete Duplicates",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Rejected Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute: Delete Duplicates": {
+      "main": [
+        [
+          {
+            "node": "Log to Database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log to Database": {
+      "main": [
+        [
+          {
+            "node": "Send Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "779aad1e-6272-4d1e-b834-becdd8f87c77",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "d463bc361a7389c26271e9bb6fdf0e737f0eef69e9a6d00e289d0c953e419938"
+  },
+  "id": "jCDAGPQhstKbZaLb",
+  "tags": []
+}
